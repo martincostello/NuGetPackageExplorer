@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
+using NuGet.Packaging.Signing;
 using NuGet.Versioning;
 
 namespace NuGetPe
@@ -188,7 +189,27 @@ namespace NuGetPe
             var sourceLinkValid = result.SourceLinkResult is SymbolValidationResult.Valid or SymbolValidationResult.ValidExternal or SymbolValidationResult.NothingToValidate;
             var deterministicValid = result.DeterministicResult is DeterministicResult.Valid or DeterministicResult.NothingToValidate;
             var compilerFlagsValid = result.CompilerFlagsResult is HasCompilerFlagsResult.Valid or HasCompilerFlagsResult.NothingToValidate;
-            return sourceLinkValid && deterministicValid && compilerFlagsValid;
+            var signatureValid = true;
+
+            if (package.IsSigned)
+            {
+                await package.VerifySignatureAsync().ConfigureAwait(false);
+
+                var signatureStatus = package.VerificationResult!.Results.Select(r => r.Trust).Min();
+                var issues = package.VerificationResult.Results.SelectMany(r => r.Issues).Where(i => i.Level > NuGet.Common.LogLevel.Minimal).Select(i => i.Message).ToArray();
+
+                var errorMessage = string.Empty;
+                signatureValid = signatureStatus is SignatureVerificationStatus.Valid;
+
+                if (issues?.Length > 0)
+                {
+                    errorMessage = string.Join(Environment.NewLine, issues);
+                }
+
+                await WriteResult("Signature", signatureStatus, errorMessage, SignatureVerificationDescription).ConfigureAwait(false);
+            }
+
+            return sourceLinkValid && deterministicValid && compilerFlagsValid && signatureValid;
         }
 
         private static async Task WriteResult<T>(string description, T value, string? errorMessage, Func<T, string>? enumDescription)
@@ -242,6 +263,18 @@ namespace NuGetPe
                 HasCompilerFlagsResult.Missing => "❌ Missing",
                 HasCompilerFlagsResult.NothingToValidate => "✅ No files found to validate",
                 _ => throw new ArgumentOutOfRangeException(nameof(result), result, $@"The value of argument '{nameof(result)}' ({result}) is invalid for enum type '{nameof(HasCompilerFlagsResult)}'.")
+            };
+        }
+
+        private static string SignatureVerificationDescription(SignatureVerificationStatus result)
+        {
+            return result switch
+            {
+                SignatureVerificationStatus.Unknown => "⚠️ Unable to verify",
+                SignatureVerificationStatus.Valid => "✅ Valid",
+                SignatureVerificationStatus.Suspect => "❌ Suspect",
+                SignatureVerificationStatus.Disallowed => "❌ Disallowed",
+                _ => throw new ArgumentOutOfRangeException(nameof(result), result, $@"The value of argument '{nameof(result)}' ({result}) is invalid for enum type '{nameof(SignatureVerificationStatus)}'.")
             };
         }
     }
